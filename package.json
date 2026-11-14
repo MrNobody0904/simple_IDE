@@ -1,0 +1,23 @@
+{
+  "name": "oa-ide",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "OA IDE - Online Compiler for Competitive Programmers",
+  "scripts": {
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev": "node scripts/start-dev.js",
+    "build:frontend": "cd frontend && npm run build",
+    "start": "cd backend && npm start"
+  },
+  "keywords": [
+    "online-ide",
+    "compiler",
+    "competitive-programming",
+    "judge0",
+    "monaco-editor",
+    "react"
+  ],
+  "author": "OA",
+  "license": "MIT"
+}

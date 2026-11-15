@@ -4,6 +4,7 @@
   "type": "module",
   "description": "OA IDE - Online Compiler for Competitive Programmers",
   "scripts": {
+    "build": "cd frontend && npm install && npm run build",
     "dev:backend": "cd backend && npm run dev",
     "dev:frontend": "cd frontend && npm run dev",
     "dev": "node scripts/start-dev.js",

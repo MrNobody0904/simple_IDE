@@ -63,17 +63,6 @@ app.use((err, req, res, next) => {
   });
 });
 
-const server = app.listen(PORT, () => {
-  console.log(`OA IDE Backend running on http://localhost:${PORT}`);
-  console.log(`Using Judge0 Endpoint: ${process.env.JUDGE0_API_URL || 'https://ce.judge0.com'}`);
-});
-
-server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`\n[OA IDE Error] Port ${PORT} is already in use.`);
-    console.error(`Another process is running on port ${PORT}. Please stop it or change PORT in .env.\n`);
-    process.exit(1);
-  } else {
-    throw err;
-  }
-});
+// Export the Express app for Vercel serverless deployment.
+// Vercel will handle listening on the appropriate port.
+export default app;

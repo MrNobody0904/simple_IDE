@@ -3,7 +3,12 @@
  * Handles code execution, problem fetching, and test case submissions
  */
 
-const API_BASE = '/api';
+// Determine the correct API base depending on environment.
+// In Vite, import.meta.env.DEV is true during local `npm run dev`.
+// When deployed on Vercel or in production, relative '/api' routes directly to the backend service.
+const API_BASE = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_URL)
+  ? import.meta.env.VITE_API_URL
+  : '/api';
 
 export const LANGUAGES = [
   { id: 'cpp', name: 'C++17 (GCC 9.2)', monaco: 'cpp', ext: 'cpp' },
@@ -136,7 +141,22 @@ export async function executeCode(sourceCode, language, input) {
       })
     });
 
-    const data = await response.json();
+    const text = await response.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = {
+        status: 'error',
+        stdout: '',
+        stderr: `Server Response (${response.status}): ${text.substring(0, 300)}`,
+        compile_output: '',
+        time: '0.00',
+        memory: 0,
+        exitCode: 1,
+        statusDescription: 'Server Error'
+      };
+    }
 
     if (!response.ok) {
       return {
@@ -181,7 +201,22 @@ export async function submitCode(problemId, sourceCode, language) {
       })
     });
 
-    const data = await response.json();
+    const text = await response.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = {
+        status: 'error',
+        stdout: '',
+        stderr: `Server Response (${response.status}): ${text.substring(0, 300)}`,
+        compile_output: '',
+        time: '0.00',
+        memory: 0,
+        exitCode: 1,
+        statusDescription: 'Server Error'
+      };
+    }
     return data;
   } catch (error) {
     return {

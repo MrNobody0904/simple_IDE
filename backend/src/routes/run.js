@@ -65,19 +65,10 @@ router.post('/run', async (req, res) => {
       });
     }
 
-    // 3. Validation: check input
-    if (typeof input !== 'string') {
-      return res.status(400).json({
-        status: 'error',
-        stdout: '',
-        stderr: 'Validation Error: "input" must be a string.',
-        time: '0.00',
-        memory: 0,
-        exitCode: 1
-      });
-    }
+    // 3. Validation: check input (handle empty or missing input seamlessly)
+    const sanitizedInput = typeof input === 'string' ? input : (input == null ? '' : String(input));
 
-    if (Buffer.byteLength(input, 'utf-8') > MAX_INPUT_BYTES) {
+    if (Buffer.byteLength(sanitizedInput, 'utf-8') > MAX_INPUT_BYTES) {
       return res.status(413).json({
         status: 'error',
         stdout: '',
@@ -92,7 +83,7 @@ router.post('/run', async (req, res) => {
     const result = await executeCode({
       sourceCode,
       language: langKey,
-      input
+      input: sanitizedInput
     });
 
     // 5. Return standardized response matching the exact spec

@@ -106,7 +106,15 @@ int main() {
 };
 
 /**
- * Execute code via Judge0 API
+ * Candidate Judge0 Endpoints with automatic failover and load distribution
+ */
+const JUDGE0_PUBLIC_ENDPOINTS = [
+  'https://ce.judge0.com',
+  'https://judge0-ce.p.rapidapi.com'
+];
+
+/**
+ * Execute code via Judge0 API with high concurrency failover & automatic retry
  */
 export async function executeCode({ sourceCode, language, input = '' }) {
   const langKey = language?.toLowerCase().trim();
@@ -115,28 +123,24 @@ export async function executeCode({ sourceCode, language, input = '' }) {
   const apiKey = process.env.JUDGE0_API_KEY ? process.env.JUDGE0_API_KEY.trim() : '';
   const apiHost = process.env.JUDGE0_API_HOST || 'judge0-ce.p.rapidapi.com';
 
-  // Smart endpoint selection:
-  // If user provided a RapidAPI key, default to RapidAPI CE endpoint.
-  // If no key is provided, default to public Judge0 CE endpoint (https://ce.judge0.com)
-  let judge0Url = process.env.JUDGE0_API_URL;
-  if (!judge0Url) {
-    judge0Url = apiKey ? 'https://judge0-ce.p.rapidapi.com' : 'https://ce.judge0.com';
+  // Base list of target endpoints
+  const endpointsToTry = [];
+  if (process.env.JUDGE0_API_URL) {
+    endpointsToTry.push(process.env.JUDGE0_API_URL.trim());
   }
-
-  const headers = {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json'
-  };
-
-  // If using RapidAPI
   if (apiKey) {
-    headers['x-rapidapi-key'] = apiKey;
-    headers['x-rapidapi-host'] = apiHost;
+    endpointsToTry.push('https://judge0-ce.p.rapidapi.com');
   }
+  endpointsToTry.push('https://ce.judge0.com');
+
+  // De-duplicate endpoints
+  const uniqueEndpoints = [...new Set(endpointsToTry.filter(Boolean))];
 
   // Base64 encode code and input to safely preserve whitespaces, special chars, and newlines
-  const encodedSource = Buffer.from(sourceCode, 'utf-8').toString('base64');
-  const encodedStdin = Buffer.from(input || '', 'utf-8').toString('base64');
+  const encodedSource = Buffer.from(sourceCode || '', 'utf-8').toString('base64');
+  // Safe stdin: empty string encoded properly to guarantee execution without input
+  const safeInput = typeof input === 'string' ? input : (input == null ? '' : String(input));
+  const encodedStdin = Buffer.from(safeInput, 'utf-8').toString('base64');
 
   const submissionPayload = {
     source_code: encodedSource,
@@ -150,62 +154,81 @@ export async function executeCode({ sourceCode, language, input = '' }) {
     submissionPayload.compiler_options = config.compilerOptions;
   }
 
-  try {
-    // Request execution with wait=true for fast synchronous turnaround
-    const cleanUrl = judge0Url.endsWith('/') ? judge0Url.slice(0, -1) : judge0Url;
-    const postUrl = `${cleanUrl}/submissions?base64_encoded=true&wait=true`;
+  let lastError = null;
 
-    let response;
+  // Try endpoints with automatic failover for high reliability
+  for (const rawUrl of uniqueEndpoints) {
+    const cleanUrl = rawUrl.endsWith('/') ? rawUrl.slice(0, -1) : rawUrl;
+    const isRapid = cleanUrl.includes('rapidapi');
+
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json'
+    };
+
+    if (isRapid && apiKey) {
+      headers['x-rapidapi-key'] = apiKey;
+      headers['x-rapidapi-host'] = apiHost;
+    }
+
     try {
-      response = await axios.post(postUrl, submissionPayload, {
-        headers,
-        timeout: 20000 // 20s HTTP timeout
-      });
-    } catch (postErr) {
-      // Fallback check if language ID was invalid on specific Judge0 instances
-      if (config.fallbackId && postErr.response?.data?.error?.includes('Language')) {
-        submissionPayload.language_id = config.fallbackId;
+      const postUrl = `${cleanUrl}/submissions?base64_encoded=true&wait=true`;
+
+      let response;
+      try {
         response = await axios.post(postUrl, submissionPayload, {
           headers,
-          timeout: 20000
+          timeout: 25000 // 25s timeout for high concurrent execution
         });
-      } else {
-        throw postErr;
+      } catch (postErr) {
+        if (config.fallbackId && postErr.response?.data?.error?.includes('Language')) {
+          submissionPayload.language_id = config.fallbackId;
+          response = await axios.post(postUrl, submissionPayload, {
+            headers,
+            timeout: 25000
+          });
+        } else {
+          throw postErr;
+        }
+      }
+
+      let submission = response.data;
+
+      // If Judge0 queued execution instead of immediate return (status 1 or 2)
+      if (submission?.token && (submission.status?.id === 1 || submission.status?.id === 2)) {
+        submission = await pollSubmission(cleanUrl, submission.token, headers);
+      }
+
+      return parseJudge0Result(submission);
+    } catch (err) {
+      lastError = err;
+      // If error is 429 (rate limit) or 503 (service unavailable) or connection refused, try next endpoint
+      const isRecoverable =
+        err.response?.status === 429 ||
+        err.response?.status >= 500 ||
+        err.code === 'ECONNABORTED' ||
+        err.code === 'ECONNREFUSED' ||
+        err.code === 'ENOTFOUND';
+
+      if (!isRecoverable && err.response?.status !== 401 && err.response?.status !== 403) {
+        break; // Don't failover on client errors like 400
       }
     }
-
-    let submission = response.data;
-
-    // If Judge0 returned a token without waiting (or status is processing: 1 or 2)
-    if (submission?.token && (submission.status?.id === 1 || submission.status?.id === 2)) {
-      submission = await pollSubmission(judge0Url, submission.token, headers);
-    }
-
-    return parseJudge0Result(submission);
-  } catch (error) {
-    // Graceful error classification
-    if (error.response) {
-      const status = error.response.status;
-      const data = error.response.data;
-
-      // Handle common Judge0 / RapidAPI error conditions
-      if (status === 401 || status === 403) {
-        throw new Error(
-          `Judge0 API Authentication Failed (${status}): ${data?.message || 'Invalid or missing API Key'}. Please check JUDGE0_API_KEY in backend .env.`
-        );
-      }
-      if (status === 429) {
-        throw new Error('Judge0 API rate limit reached. Please wait a few seconds before submitting again.');
-      }
-      throw new Error(`Judge0 API error (${status}): ${JSON.stringify(data)}`);
-    } else if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
-      throw new Error('Execution timed out while waiting for Judge0 server.');
-    } else if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
-      throw new Error(`Unable to connect to Judge0 at ${judge0Url}. Please ensure network connection or update JUDGE0_API_URL.`);
-    }
-
-    throw error;
   }
+
+  // If all attempts failed, throw informative error
+  if (lastError?.response) {
+    const status = lastError.response.status;
+    const data = lastError.response.data;
+    if (status === 429) {
+      throw new Error('Code evaluation servers are experiencing heavy traffic. Please wait a moment and click Run again.');
+    }
+    throw new Error(`Judge0 API Error (${status}): ${typeof data === 'string' ? data : (data?.message || JSON.stringify(data))}`);
+  } else if (lastError?.code === 'ECONNABORTED' || lastError?.message?.includes('timeout')) {
+    throw new Error('Code execution timed out. The server was busy or your code has an infinite loop.');
+  }
+
+  throw lastError || new Error('Unable to contact code execution engines.');
 }
 
 /**
